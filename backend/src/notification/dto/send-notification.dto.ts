@@ -10,7 +10,7 @@ export class EmailNotificationDto {
 }
 
 export class PushNotificationDto {
-  deviceToken: string;
+  deviceTokens: string[];
   title: string;
   message: string;
   image?: string;
