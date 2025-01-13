@@ -1,8 +1,10 @@
-import { Injectable, Logger } from '@nestjs/common';
-import { MailService } from 'src/mail/mail.service';
+import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import { MailService } from '../../mail/mail.service';
 import { SendNotificationDto } from './dto/send-notification.dto';
+import { SubscribeNotificationDto } from './dto/subscribe-notification.dto';
 import * as admin from 'firebase-admin';
 import { ConfigService } from '@nestjs/config';
+import { PrismaService } from '../../prisma/prisma.service';
 
 @Injectable()
 export class NotificationService {
@@ -12,6 +14,7 @@ export class NotificationService {
   constructor(
     private readonly mailService: MailService,
     private readonly configService: ConfigService,
+    private readonly prisma: PrismaService,
   ) {
     // Initialize Firebase Admin SDK
     if (!admin.apps.length) {
@@ -48,30 +51,33 @@ export class NotificationService {
 
       // Handle push notification if provided
       if (dto.push) {
-        const message: admin.messaging.Message = {
-          token: dto.push.deviceToken,
-          notification: {
-            title: dto.push.title,
-            body: dto.push.message,
-            imageUrl: dto.push.image,
-          },
-        };
+        // Send notification to all device tokens
+        dto.push.deviceTokens.forEach((deviceToken) => {
+          const message: admin.messaging.Message = {
+            token: deviceToken,
+            notification: {
+              title: dto.push.title,
+              body: dto.push.message,
+              imageUrl: dto.push.image,
+            },
+          };
 
-        const pushPromise = this.firebaseApp
-          .messaging()
-          .send(message)
-          .then((response) => {
-            this.logger.debug(
-              `Successfully sent push notification: ${response}`,
-            );
-            return response;
-          })
-          .catch((error) => {
-            this.logger.error('Error sending push notification:', error);
-            throw error;
-          });
+          const pushPromise = this.firebaseApp
+            .messaging()
+            .send(message)
+            .then((response) => {
+              this.logger.debug(
+                `Successfully sent push notification: ${response}`,
+              );
+              return response;
+            })
+            .catch((error) => {
+              this.logger.error('Error sending push notification:', error);
+              throw error;
+            });
 
-        promises.push(pushPromise);
+          promises.push(pushPromise);
+        });
       }
 
       // Wait for all notifications to be sent
@@ -104,13 +110,43 @@ export class NotificationService {
     }
   }
 
+  async subscribeDevice(
+    userId: number,
+    sessionId: string,
+    dto: SubscribeNotificationDto,
+  ) {
+    try {
+      // Verify the session belongs to the user
+      const session = await this.prisma.userLoginSession.findUnique({
+        where: { sessionId },
+        select: { userId: true },
+      });
+
+      if (!session || session.userId !== userId) {
+        throw new UnauthorizedException('Invalid session');
+      }
+
+      // Update the session with the device token
+      await this.prisma.userLoginSession.update({
+        where: { sessionId },
+        data: { deviceToken: dto.deviceToken },
+      });
+
+      this.logger.debug(`Device token updated for session ${sessionId}`);
+      return { message: 'Device subscribed successfully' };
+    } catch (error) {
+      this.logger.error('Error in subscribeDevice:', error);
+      throw error;
+    }
+  }
+
   async testPushNotification(deviceToken: string) {
     try {
       const message: admin.messaging.Message = {
         token: deviceToken,
         notification: {
           title: 'Test Notification',
-          body: `This is a test push notification sent at ${Date.now()}`,
+          body: 'This is a test push notification',
         },
       };
 
